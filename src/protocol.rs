@@ -1,12 +1,13 @@
 use crate::config;
 use trust_dns_resolver::Resolver;
+use std::{io::prelude::*, net::{TcpListener, Shutdown}};
 
 use wayland_client::protocol::{
     wl_pointer::{Axis, ButtonState},
     wl_keyboard::KeyState,
 };
 
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{SocketAddr, UdpSocket, TcpStream};
 
 pub trait Resolve {
     fn resolve(&self) -> Option<SocketAddr>;
@@ -18,12 +19,12 @@ impl Resolve for Option<config::Client> {
             let ip = if let Some(ip) = client.ip {
                 ip
             } else {
-                match client.host_name.as_ref() {
+                match &client.host_name {
                     Some(host) => {
                         let resolver = Resolver::from_system_conf().unwrap();
                         let response = resolver
-                            .lookup_ip(host)
-                            .expect(format!("couldn't resolve {}", host).as_str());
+                            .lookup_ip(host.as_str())
+                            .expect(format!("couldn't resolve {}", host.as_str()).as_str());
                         if let Some(ip) = response.iter().next() {
                             ip
                         } else {
@@ -52,7 +53,7 @@ struct ClientAddrs {
 
 pub struct Connection {
     udp_socket: UdpSocket,
-    _port: u16,
+    port: u16,
     client: ClientAddrs,
 }
 
@@ -74,21 +75,45 @@ impl Connection {
         };
         Connection {
             udp_socket: UdpSocket::bind(SocketAddr::new("0.0.0.0".parse().unwrap(), config.port.unwrap_or(42069)))
-                .expect("couldn't bind to {}"),
-            _port: if let Some(port) = config.port { port } else { 42069 },
+                .unwrap(),
+            port: if let Some(port) = config.port { port } else { 42069 },
             client: clients,
         }
     }
 
+
+    pub fn send_data(&self, buf: &[u8]) {
+        if let Some(addr) = self.client.right {
+            let addr = SocketAddr::new(addr.ip(), 6969);
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream.write(&buf.len().to_ne_bytes()).unwrap();
+            stream.write(buf).unwrap();
+            stream.flush().unwrap();
+            stream.shutdown(Shutdown::Both).unwrap();
+        }
+    }
+
+    pub fn receive_data(&self) -> Vec<u8> {
+        let sock = TcpListener::bind(SocketAddr::new("0.0.0.0".parse().unwrap(), 6969)).unwrap();
+        let (mut client_sock, addr) = sock.accept().unwrap();
+        println!("receiving from {}", addr);
+        let mut buf = [0u8;4];
+        client_sock.read(&mut buf[..]).unwrap();
+        let len = u32::from_ne_bytes(buf);
+        let mut data: Vec<u8> = Vec::with_capacity(len as usize);
+        client_sock.read(&mut data[..]).unwrap();
+        data
+    }
+
     pub fn send_event(&self, e: &Event) {
-        let buf = e.encode();
         // TODO check which client
         if let Some(addr) = self.client.right {
+            let buf = e.encode();
             self.udp_socket.send_to(&buf, addr).unwrap();
         }
     }
 
-    pub fn receive(&self) -> Option<Event> {
+    pub fn receive_event(&self) -> Option<Event> {
         let mut buf = [0u8; 21];
         if let Ok((_amt, _src)) = self.udp_socket.recv_from(&mut buf) {
             Some(Event::decode(buf))
