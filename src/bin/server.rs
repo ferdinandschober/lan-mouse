@@ -39,9 +39,12 @@ struct App {
     rel_pointer_manager: Option<zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1>,
     pointer_lock: Option<zwp_locked_pointer_v1::ZwpLockedPointerV1>,
     rel_pointer: Option<zwp_relative_pointer_v1::ZwpRelativePointerV1>,
+    connection: protocol::Connection,
 }
 
 fn main() {
+    let config = lan_mouse::config::Config::new("config.toml").unwrap();
+    let connection = protocol::Connection::new(config);
     // establish connection via environment-provided configuration.
     let conn = Connection::connect_to_env().unwrap();
 
@@ -67,6 +70,7 @@ fn main() {
         rel_pointer_manager: None,
         pointer_lock: None,
         rel_pointer: None,
+        connection: connection,
     };
 
     let args: Vec<String> = env::args().collect();
@@ -131,16 +135,16 @@ impl App {
 
     fn send_motion_event(&self, time: u32, x: f64, y: f64) {
         let e = protocol::Event::Mouse { t: (time), x: (x), y: (y) };
-        protocol::send_event(&e);
+        self.connection.send_event(&e);
     }
 
     fn send_button_event(&self, t: u32, b: u32, s: ButtonState) {
         let e = protocol::Event::Button { t, b, s };
-        self.send_event(&e);
+        self.connection.send_event(&e);
     }
     fn send_axis_event(&self, t: u32, a: Axis, v: f64) {
         let e = protocol::Event::Axis { t, a, v };
-        self.send_event(&e);
+        self.connection.send_event(&e);
     }
 }
 
