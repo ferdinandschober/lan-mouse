@@ -100,7 +100,7 @@ impl Connection {
         let mut buf = [0u8;8];
         client_sock.read_exact(&mut buf[..]).unwrap();
         let len = usize::from_ne_bytes(buf);
-        let mut data: Vec<u8> = Vec::with_capacity(len as usize);
+        let mut data: Vec<u8> = vec![0u8; len];
         client_sock.read_exact(&mut data[..]).unwrap();
         data
     }
