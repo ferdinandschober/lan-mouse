@@ -2,7 +2,6 @@ use lan_mouse::protocol;
 use memmap::Mmap;
 
 use std::{
-    env,
     fs::File,
     io::{BufWriter, Write},
     os::unix::prelude::{AsRawFd, FromRawFd},
@@ -25,7 +24,6 @@ use wayland_client::{
 };
 
 use tempfile;
-use trust_dns_resolver::Resolver;
 
 struct App {
     running: bool,
@@ -70,20 +68,8 @@ fn main() {
         rel_pointer_manager: None,
         pointer_lock: None,
         rel_pointer: None,
-        connection: connection,
+        connection,
     };
-
-    let args: Vec<String> = env::args().collect();
-    let arg = match args.get(1) {
-        Some(s) => s.as_str(),
-        None => "localhost",
-    };
-    if let Ok(ip) = IpAddr::from_str(arg) {
-        app.ip = Some(ip);
-        println!("{} ", ip);
-    } else {
-        app.resolve_host(arg);
-    }
 
     // use roundtrip to process this event synchronously
     event_queue.roundtrip(&mut app).unwrap();
@@ -120,17 +106,6 @@ fn draw(f: &mut File, (width, height): (u32, u32)) {
 }
 
 impl App {
-    fn resolve_host(&mut self, host: &str) {
-        let resolver = Resolver::from_system_conf().unwrap();
-        let response = resolver
-            .lookup_ip(host)
-            .expect(format!("couldn't resolve {}", host).as_str());
-        self.ip = response.iter().next();
-        if let None = self.ip {
-            panic!("couldn't resolve host: {}!", host)
-        }
-        println!("Client: {} {}", host, self.ip.unwrap());
-    }
 
 
     fn send_motion_event(&self, time: u32, x: f64, y: f64) {
@@ -432,11 +407,11 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for App {
                         app.rel_pointer = None;
                     }
                 } else {
-                    app.send_event(&protocol::Event::Key{ t: (time), k: (key), s: (state.into_result().unwrap()) });
+                    app.connection.send_event(&protocol::Event::Key{ t: (time), k: (key), s: (state.into_result().unwrap()) });
                 }
             }
-            wl_keyboard::Event::Keymap { format, fd, size } => {
-                let mmap = unsafe { Mmap::map(&File::from_raw_fd(fd.as_raw_fd())).unwrap() };
+            wl_keyboard::Event::Keymap { format: _, fd, size: _ } => {
+                let _mmap = unsafe { Mmap::map(&File::from_raw_fd(fd.as_raw_fd())).unwrap() };
             }
             _ => (),
         }

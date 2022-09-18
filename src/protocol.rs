@@ -1,4 +1,5 @@
 use crate::config;
+use trust_dns_resolver::Resolver;
 
 use wayland_client::protocol::{
     wl_pointer::{Axis, ButtonState},
@@ -7,10 +8,52 @@ use wayland_client::protocol::{
 
 use std::net::{SocketAddr, UdpSocket};
 
+pub trait Resolve {
+    fn resolve(&self) -> Option<SocketAddr>;
+}
+
+impl Resolve for Option<config::Client> {
+    fn resolve(&self) -> Option<SocketAddr> {
+        if let Some(client) = self {
+            let ip = if let Some(ip) = client.ip {
+                ip
+            } else {
+                match client.host_name.as_ref() {
+                    Some(host) => {
+                        let resolver = Resolver::from_system_conf().unwrap();
+                        let response = resolver
+                            .lookup_ip(host)
+                            .expect(format!("couldn't resolve {}", host).as_str());
+                        if let Some(ip) = response.iter().next() {
+                            ip
+                        } else {
+                            panic!("couldn't resolve host: {}", host)
+                        }
+                    }
+                    None => {
+                        panic!("either ip or host_name must be specified");
+                    }
+                }
+            };
+            let port = if let Some(port) = client.port { port } else { 42069 };
+            Some(SocketAddr::new(ip, port))
+        } else {
+            None
+        }
+    }
+}
+
+struct ClientAddrs {
+    _left: Option<SocketAddr>,
+    right: Option<SocketAddr>,
+    _top: Option<SocketAddr>,
+    _bottom: Option<SocketAddr>,
+}
+
 pub struct Connection {
     udp_socket: UdpSocket,
-    port: u16,
-    clients: config::Clients,
+    _port: u16,
+    client: ClientAddrs,
 }
 
 pub enum Event {
@@ -23,27 +66,26 @@ pub enum Event {
 
 impl Connection {
     pub fn new(config: config::Config) -> Connection {
+        let clients = ClientAddrs {
+            _left: config.client.left.resolve(),
+            right: config.client.right.resolve(),
+            _top: config.client.top.resolve(),
+            _bottom: config.client.bottom.resolve(),
+        };
         Connection {
             udp_socket: UdpSocket::bind(SocketAddr::new("0.0.0.0".parse().unwrap(), config.port.unwrap_or(42069)))
                 .expect("couldn't bind to {}"),
-            port: if let Some(port) = config.port { port } else { 42069 },
-            clients: config.client,
+            _port: if let Some(port) = config.port { port } else { 42069 },
+            client: clients,
         }
     }
 
     pub fn send_event(&self, e: &Event) {
         let buf = e.encode();
         // TODO check which client
-        let ip = self.clients.right
-            .as_ref()
-            .unwrap()
-            .ip
-            .as_ref()
-            .unwrap()
-            .parse().unwrap();
-        self.udp_socket
-            .send_to(&buf, SocketAddr::new(ip, self.port))
-            .unwrap();
+        if let Some(addr) = self.client.right {
+            self.udp_socket.send_to(&buf, addr).unwrap();
+        }
     }
 
     pub fn receive(&self) -> Option<Event> {
