@@ -84,7 +84,6 @@ impl Connection {
 
     pub fn send_data(&self, buf: &[u8]) {
         if let Some(addr) = self.client.right {
-            let addr = SocketAddr::new(addr.ip(), 42069);
             let mut stream = TcpStream::connect(addr).unwrap();
             println!("sending {} bytes!", buf.len());
             stream.write(&buf.len().to_ne_bytes()).unwrap();
@@ -94,7 +93,7 @@ impl Connection {
     }
 
     pub fn receive_data(&self) -> Vec<u8> {
-        let sock = TcpListener::bind(SocketAddr::new("0.0.0.0".parse().unwrap(), 42069)).unwrap();
+        let sock = TcpListener::bind(SocketAddr::new("0.0.0.0".parse().unwrap(), self.port)).unwrap();
         let (mut client_sock, addr) = sock.accept().unwrap();
         println!("receiving from {}", addr);
         let mut buf = [0u8;8];
