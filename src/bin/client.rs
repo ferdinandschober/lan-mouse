@@ -99,6 +99,7 @@ fn main() {
     buf.write_all(&data[..]).unwrap();
     buf.flush().unwrap();
     keyboard.keymap(1, f.as_raw_fd(), data.len() as u32);
+    event_queue.roundtrip(&mut app).unwrap();
     udp_loop(&connection, &pointer, &keyboard, event_queue).unwrap();
 }
 

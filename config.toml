@@ -6,6 +6,6 @@ location = "right"
 
 [client.right]
 host_name = "osmium"
-ip = "192.168.2.181"
+ip = "192.168.178.114"
 location = "left"
 port = 42069

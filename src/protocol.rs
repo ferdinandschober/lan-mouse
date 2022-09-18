@@ -84,24 +84,24 @@ impl Connection {
 
     pub fn send_data(&self, buf: &[u8]) {
         if let Some(addr) = self.client.right {
-            let addr = SocketAddr::new(addr.ip(), 6969);
+            let addr = SocketAddr::new(addr.ip(), 42069);
             let mut stream = TcpStream::connect(addr).unwrap();
+            println!("sending {} bytes!", buf.len());
             stream.write(&buf.len().to_ne_bytes()).unwrap();
             stream.write(buf).unwrap();
             stream.flush().unwrap();
-            stream.shutdown(Shutdown::Both).unwrap();
         }
     }
 
     pub fn receive_data(&self) -> Vec<u8> {
-        let sock = TcpListener::bind(SocketAddr::new("0.0.0.0".parse().unwrap(), 6969)).unwrap();
+        let sock = TcpListener::bind(SocketAddr::new("0.0.0.0".parse().unwrap(), 42069)).unwrap();
         let (mut client_sock, addr) = sock.accept().unwrap();
         println!("receiving from {}", addr);
-        let mut buf = [0u8;4];
-        client_sock.read(&mut buf[..]).unwrap();
-        let len = u32::from_ne_bytes(buf);
+        let mut buf = [0u8;8];
+        client_sock.read_exact(&mut buf[..]).unwrap();
+        let len = usize::from_ne_bytes(buf);
         let mut data: Vec<u8> = Vec::with_capacity(len as usize);
-        client_sock.read(&mut data[..]).unwrap();
+        client_sock.read_exact(&mut data[..]).unwrap();
         data
     }
 

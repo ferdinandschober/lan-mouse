@@ -420,6 +420,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for App {
                 app.keymap = Some(unsafe { Mmap::map(&File::from_raw_fd(fd.as_raw_fd())).unwrap() });
                 assert!(size as usize == app.keymap.as_ref().unwrap().len());
                 let buf = &app.keymap.as_mut().unwrap()[..];
+                println!("{:?}", buf);
                 app.connection.send_data(buf);
             }
             _ => (),
