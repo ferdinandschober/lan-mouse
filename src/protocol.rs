@@ -1,7 +1,17 @@
+use crate::config;
+
 use wayland_client::protocol::{
     wl_pointer::{Axis, ButtonState},
     wl_keyboard::KeyState,
 };
+
+use std::net::{SocketAddr, UdpSocket};
+
+pub struct Connection {
+    udp_socket: UdpSocket,
+    port: u16,
+    clients: config::Clients,
+}
 
 pub enum Event {
     Mouse{t: u32, x: f64, y: f64},
@@ -9,6 +19,41 @@ pub enum Event {
     Axis{t: u32, a: Axis, v: f64},
     Key{t: u32, k: u32, s: KeyState},
     KeyModifier{mods_depressed: u32, mods_latched: u32, mods_locked: u32, group: u32},
+}
+
+impl Connection {
+    pub fn new(config: config::Config) -> Connection {
+        Connection {
+            udp_socket: UdpSocket::bind(SocketAddr::new("0.0.0.0".parse().unwrap(), config.port.unwrap_or(42069)))
+                .expect("couldn't bind to {}"),
+            port: if let Some(port) = config.port { port } else { 42069 },
+            clients: config.client,
+        }
+    }
+
+    pub fn send_event(&self, e: &Event) {
+        let buf = e.encode();
+        // TODO check which client
+        let ip = self.clients.right
+            .as_ref()
+            .unwrap()
+            .ip
+            .as_ref()
+            .unwrap()
+            .parse().unwrap();
+        self.udp_socket
+            .send_to(&buf, SocketAddr::new(ip, self.port))
+            .unwrap();
+    }
+
+    pub fn receive(&self) -> Option<Event> {
+        let mut buf = [0u8; 21];
+        if let Ok((_amt, _src)) = self.udp_socket.recv_from(&mut buf) {
+            Some(Event::decode(buf))
+        } else {
+            None
+        }
+    }
 }
 
 impl Event {

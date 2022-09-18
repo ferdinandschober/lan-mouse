@@ -1,4 +1,4 @@
-use std::net::UdpSocket;
+use std::{os::unix::prelude::RawFd, os::unix::prelude::AsRawFd};
 use lan_mouse::protocol;
 
 use wayland_protocols_wlr::virtual_pointer::v1::client::{
@@ -12,7 +12,7 @@ use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
 };
 
 use wayland_client::{
-    protocol::{wl_registry, wl_seat, wl_keyboard::KeyState},
+    protocol::{wl_registry, wl_seat, wl_keyboard},
     Connection, Dispatch, EventQueue, QueueHandle,
 };
 
@@ -21,6 +21,7 @@ struct App {
     vpm: Option<VpManager>,
     vkm: Option<VkManager>,
     seat: Option<wl_seat::WlSeat>,
+    keymap: Option<(wl_keyboard::KeymapFormat, RawFd, u32)>,
 }
 
 // Implement `Dispatch<WlRegistry, ()> event handler
@@ -41,6 +42,9 @@ impl Dispatch<wl_registry::WlRegistry, ()> for App {
         {
             // println!("[{}] {} (v{})", name, interface, version);
             match &interface[..] {
+                "wl_keyboard" => {
+                    registry.bind::<wl_keyboard::WlKeyboard, _, _>(name, 1, qh, ());
+                }
                 "wl_seat" => {
                     app.seat = Some(registry.bind::<wl_seat::WlSeat, _, _>(name, 1, qh, ()));
                 }
@@ -58,6 +62,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for App {
 
 // The main function of our program
 fn main() {
+    let config = lan_mouse::config::Config::new("config.toml").unwrap();
     // establish connection via environment-provided configuration.
     let conn = Connection::connect_to_env().unwrap();
 
@@ -75,50 +80,54 @@ fn main() {
         vpm: None,
         vkm: None,
         seat: None,
+        keymap: None,
     };
 
     // use roundtrip to process this event synchronously
     event_queue.roundtrip(&mut app).unwrap();
 
-    let vpm = app.vpm.unwrap();
-    let vkm = app.vkm.unwrap();
-    let seat = app.seat.unwrap();
+
+    let vpm = app.vpm.as_ref().unwrap();
+    let vkm = app.vkm.as_ref().unwrap();
+    let seat = app.seat.as_ref().unwrap();
     let pointer: Vp = vpm.create_virtual_pointer(None, &qh, ());
     let keyboard: Vk = vkm.create_virtual_keyboard(&seat, &qh, ());
-    udp_loop(&pointer, &keyboard, event_queue).unwrap();
+    while app.keymap.is_none() {
+        event_queue.blocking_dispatch(&mut app).unwrap();
+    }
+    let (format, fd, size) = app.keymap.unwrap();
+    keyboard.keymap(u32::from(format), fd, size);
+    let connection = protocol::Connection::new(config);
+    udp_loop(&connection, &pointer, &keyboard, event_queue).unwrap();
     println!();
 }
 
 /// main loop handling udp packets
-fn udp_loop(pointer: &Vp, keyboard: &Vk, q: EventQueue<App>) -> std::io::Result<()> {
-    let socket = UdpSocket::bind("0.0.0.0:42069")?;
-    // we don't care about possible dropped packets for now
-
-    let mut buf = [0u8; 21];
+fn udp_loop(connection: &protocol::Connection, pointer: &Vp, keyboard: &Vk, q: EventQueue<App>) -> std::io::Result<()> {
     loop {
-        let (_amt, _src) = socket.recv_from(&mut buf)?;
-
-        match protocol::Event::decode(buf) {
-            protocol::Event::Mouse { t, x, y } => {
-                pointer.motion(t, x, y);
+        if let Some(event) = connection.receive() {
+            match event {
+                protocol::Event::Mouse { t, x, y } => {
+                    pointer.motion(t, x, y);
+                }
+                protocol::Event::Button { t, b, s } => {
+                    pointer.button(t, b, s);
+                }
+                protocol::Event::Axis { t, a, v } => {
+                    pointer.axis(t, a, v);
+                }
+                protocol::Event::Key { t, k, s } => {
+                    // TODO send keymap fist
+                    keyboard.key(t, k, match s {
+                        wl_keyboard::KeyState::Released => 0,
+                        wl_keyboard::KeyState::Pressed => 1,
+                        _ => 1,
+                    });
+                },
+                protocol::Event::KeyModifier { mods_depressed, mods_latched, mods_locked, group } => {
+                    keyboard.modifiers(mods_depressed, mods_latched, mods_locked, group);
+                },
             }
-            protocol::Event::Button { t, b, s } => {
-                pointer.button(t, b, s);
-            }
-            protocol::Event::Axis { t, a, v } => {
-                pointer.axis(t, a, v);
-            }
-            protocol::Event::Key { t, k, s } => {
-                // TODO send keymap fist
-                // keyboard.key(t, k, match s {
-                //     KeyState::Released => 0,
-                //     KeyState::Pressed => 1,
-                //     _ => 1,
-                // });
-            },
-            protocol::Event::KeyModifier { mods_depressed, mods_latched, mods_locked, group } => {
-                // keyboard.modifiers(mods_depressed, mods_latched, mods_locked, group);
-            },
         }
 
         q.flush().unwrap();
@@ -148,6 +157,22 @@ impl Dispatch<Vp, ()> for App {
         _: &QueueHandle<Self>,
     ) {
         // no events defined for vp either
+    }
+}
+
+impl Dispatch<wl_keyboard::WlKeyboard, ()> for App {
+    fn event(
+        app: &mut Self,
+        _: &wl_keyboard::WlKeyboard,
+        event: <wl_keyboard::WlKeyboard as wayland_client::Proxy>::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_keyboard::Event::Keymap { format, fd, size } = event {
+            println!("keymap received");
+            app.keymap = Some((format.into_result().unwrap(), fd.as_raw_fd(), size));
+        }
     }
 }
 

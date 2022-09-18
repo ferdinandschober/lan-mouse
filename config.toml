@@ -1,0 +1,11 @@
+[client.left]
+host_name = "osmium"
+ip = "192.168.178.141"
+port = 42069
+location = "right"
+
+[client.right]
+host_name = "rubinium"
+ip = "192.168.178.114"
+port = 42069
+location = "left"

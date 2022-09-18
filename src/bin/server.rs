@@ -1,11 +1,11 @@
 use lan_mouse::protocol;
+use memmap::Mmap;
+
 use std::{
     env,
     fs::File,
     io::{BufWriter, Write},
-    net::{IpAddr, SocketAddr, UdpSocket},
-    str::FromStr,
-    os::unix::prelude::AsRawFd,
+    os::unix::prelude::{AsRawFd, FromRawFd},
 };
 
 use wayland_protocols::{
@@ -35,12 +35,10 @@ struct App {
     surface: Option<wl_surface::WlSurface>,
     top_level: Option<xdg_toplevel::XdgToplevel>,
     xdg_surface: Option<xdg_surface::XdgSurface>,
-    socket: UdpSocket,
     pointer_constraints: Option<zwp_pointer_constraints_v1::ZwpPointerConstraintsV1>,
     rel_pointer_manager: Option<zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1>,
     pointer_lock: Option<zwp_locked_pointer_v1::ZwpLockedPointerV1>,
     rel_pointer: Option<zwp_relative_pointer_v1::ZwpRelativePointerV1>,
-    ip: Option<IpAddr>,
 }
 
 fn main() {
@@ -65,12 +63,10 @@ fn main() {
         surface: None,
         top_level: None,
         xdg_surface: None,
-        socket: UdpSocket::bind("0.0.0.0:42070").expect("couldn't bind to address"),
         pointer_constraints: None,
         rel_pointer_manager: None,
         pointer_lock: None,
         rel_pointer: None,
-        ip: None,
     };
 
     let args: Vec<String> = env::args().collect();
@@ -97,7 +93,7 @@ fn main() {
     app.top_level
         .as_ref()
         .unwrap()
-        .set_title("LAN Mouse".into());
+        .set_title("LAN Mouse Share".into());
     app.surface.as_ref().unwrap().commit();
 
     while app.running {
@@ -132,16 +128,10 @@ impl App {
         println!("Client: {} {}", host, self.ip.unwrap());
     }
 
-    fn send_event(&self, e: &protocol::Event) {
-        let buf = e.encode();
-        self.socket
-            .send_to(&buf, SocketAddr::new(self.ip.unwrap(), 42069))
-            .unwrap();
-    }
 
     fn send_motion_event(&self, time: u32, x: f64, y: f64) {
         let e = protocol::Event::Mouse { t: (time), x: (x), y: (y) };
-        self.send_event(&e);
+        protocol::send_event(&e);
     }
 
     fn send_button_event(&self, t: u32, b: u32, s: ButtonState) {
@@ -425,20 +415,26 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for App {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let wl_keyboard::Event::Key { serial: _, time, key, state } = event {
-            if key == 1 {
-                // ESC key
-                if let Some(pointer_lock) = app.pointer_lock.as_ref() {
-                    pointer_lock.destroy();
-                    app.pointer_lock = None;
+        match event {
+            wl_keyboard::Event::Key { serial: _, time, key, state } => {
+                if key == 1 {
+                    // ESC key
+                    if let Some(pointer_lock) = app.pointer_lock.as_ref() {
+                        pointer_lock.destroy();
+                        app.pointer_lock = None;
+                    }
+                    if let Some(rel_pointer) = app.rel_pointer.as_ref() {
+                        rel_pointer.destroy();
+                        app.rel_pointer = None;
+                    }
+                } else {
+                    app.send_event(&protocol::Event::Key{ t: (time), k: (key), s: (state.into_result().unwrap()) });
                 }
-                if let Some(rel_pointer) = app.rel_pointer.as_ref() {
-                    rel_pointer.destroy();
-                    app.rel_pointer = None;
-                }
-            } else {
-                app.send_event(&protocol::Event::Key{ t: (time), k: (key), s: (state.into_result().unwrap()) });
             }
+            wl_keyboard::Event::Keymap { format, fd, size } => {
+                let mmap = unsafe { Mmap::map(&File::from_raw_fd(fd.as_raw_fd())).unwrap() };
+            }
+            _ => (),
         }
     }
 }
