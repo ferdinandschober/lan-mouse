@@ -4,6 +4,6 @@ ip = "192.168.178.141"
 port = 42069
 
 [client.right]
-# host_name = "osmium"
+host_name = "Osmium"
 ip = "192.168.2.182"
 port = 42069
