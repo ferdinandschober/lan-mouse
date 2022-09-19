@@ -1,5 +1,5 @@
 use std::{os::unix::prelude::AsRawFd, io::{Write, BufWriter}};
-use lan_mouse::{protocol, config::Config};
+use lan_mouse::{protocol::{self, DataRequest}, config::Config};
 
 use wayland_protocols_wlr::virtual_pointer::v1::client::{
     zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1 as VpManager,
@@ -93,7 +93,12 @@ fn main() {
     let pointer: Vp = vpm.create_virtual_pointer(None, &qh, ());
     let keyboard: Vk = vkm.create_virtual_keyboard(&seat, &qh, ());
     let connection = protocol::Connection::new(config);
-    let data = connection.receive_data();
+    let data = loop {
+        match connection.receive_data(DataRequest::KeyMap) {
+            Some(data) => { break data }
+            None => {}
+        }
+    };
     // TODO use shm_open
     let f = tempfile::tempfile().unwrap();
     let mut buf = BufWriter::new(&f);
@@ -109,28 +114,15 @@ fn udp_loop(connection: &protocol::Connection, pointer: &Vp, keyboard: &Vk, q: E
     loop {
         if let Some(event) = connection.receive_event() {
             match event {
-                protocol::Event::Mouse { t, x, y } => {
-                    pointer.motion(t, x, y);
-                }
-                protocol::Event::Button { t, b, s } => {
-                    pointer.button(t, b, s);
-                }
-                protocol::Event::Axis { t, a, v } => {
-                    pointer.axis(t, a, v);
-                }
-                protocol::Event::Key { t, k, s } => {
-                    keyboard.key(t, k, match s {
-                        wl_keyboard::KeyState::Released => 0,
-                        wl_keyboard::KeyState::Pressed => 1,
-                        _ => 1,
-                    });
-                },
+                protocol::Event::Mouse { t, x, y } => { pointer.motion(t, x, y); }
+                protocol::Event::Button { t, b, s } => { pointer.button(t, b, s); }
+                protocol::Event::Axis { t, a, v } => { pointer.axis(t, a, v); }
+                protocol::Event::Key { t, k, s } => { keyboard.key(t, k, u32::from(s)); },
                 protocol::Event::KeyModifier { mods_depressed, mods_latched, mods_locked, group } => {
                     keyboard.modifiers(mods_depressed, mods_latched, mods_locked, group);
                 },
             }
         }
-
         q.flush().unwrap();
     }
 }
