@@ -38,7 +38,6 @@ struct App {
     pointer_lock: Option<zwp_locked_pointer_v1::ZwpLockedPointerV1>,
     rel_pointer: Option<zwp_relative_pointer_v1::ZwpRelativePointerV1>,
     connection: protocol::Connection,
-    keymap: Option<Mmap>,
 }
 
 fn main() {
@@ -70,7 +69,6 @@ fn main() {
         pointer_lock: None,
         rel_pointer: None,
         connection,
-        keymap: None,
     };
 
     // use roundtrip to process this event synchronously
@@ -87,10 +85,6 @@ fn main() {
         .unwrap()
         .set_title("LAN Mouse Share".into());
     app.surface.as_ref().unwrap().commit();
-
-    while app.keymap.is_none() {
-        event_queue.blocking_dispatch(&mut app).unwrap();
-    }
 
     while app.running {
         event_queue.blocking_dispatch(&mut app).unwrap();
@@ -416,12 +410,12 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for App {
                     app.connection.send_event(&protocol::Event::Key{ t: (time), k: (key), s: (state.into_result().unwrap()) });
                 }
             }
-            wl_keyboard::Event::Keymap { format:_ , fd, size } => {
-                app.keymap = Some(unsafe { Mmap::map(&File::from_raw_fd(fd.as_raw_fd())).unwrap() });
-                assert!(size as usize == app.keymap.as_ref().unwrap().len());
-                let buf = &app.keymap.as_mut().unwrap()[..];
-                println!("{:?}", buf);
-                app.connection.send_data(buf);
+            wl_keyboard::Event::Modifiers { serial: _, mods_depressed, mods_latched, mods_locked, group } => {
+                app.connection.send_event(&protocol::Event::KeyModifier{ mods_depressed, mods_latched, mods_locked, group });
+            }
+            wl_keyboard::Event::Keymap { format:_ , fd, size:_ } => {
+                let mmap = unsafe { Mmap::map(&File::from_raw_fd(fd.as_raw_fd())).unwrap() };
+                app.connection.offer_data(protocol::DataRequest::KeyMap, mmap);
             }
             _ => (),
         }

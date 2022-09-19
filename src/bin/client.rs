@@ -94,6 +94,7 @@ fn main() {
     let keyboard: Vk = vkm.create_virtual_keyboard(&seat, &qh, ());
     let connection = protocol::Connection::new(config);
     let data = connection.receive_data();
+    // TODO use shm_open
     let f = tempfile::tempfile().unwrap();
     let mut buf = BufWriter::new(&f);
     buf.write_all(&data[..]).unwrap();

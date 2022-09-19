@@ -1,6 +1,7 @@
-use crate::config;
+use memmap::Mmap;
+use crate::config::{self, Config};
 use trust_dns_resolver::Resolver;
-use std::{io::prelude::*, net::{TcpListener, Shutdown}};
+use std::{io::prelude::*, net::TcpListener, thread, sync::{Arc, RwLock}, collections::HashMap};
 
 use wayland_client::protocol::{
     wl_pointer::{Axis, ButtonState},
@@ -8,6 +9,10 @@ use wayland_client::protocol::{
 };
 
 use std::net::{SocketAddr, UdpSocket, TcpStream};
+
+pub trait Data {
+    fn data(&self) -> &[u8];
+}
 
 pub trait Resolve {
     fn resolve(&self) -> Option<SocketAddr>;
@@ -45,7 +50,7 @@ impl Resolve for Option<config::Client> {
 }
 
 struct ClientAddrs {
-    _left: Option<SocketAddr>,
+    left: Option<SocketAddr>,
     right: Option<SocketAddr>,
     _top: Option<SocketAddr>,
     _bottom: Option<SocketAddr>,
@@ -53,8 +58,9 @@ struct ClientAddrs {
 
 pub struct Connection {
     udp_socket: UdpSocket,
-    port: u16,
+    _port: u16,
     client: ClientAddrs,
+    offer_data: Arc<RwLock<HashMap<DataRequest, Mmap>>>,
 }
 
 pub enum Event {
@@ -65,42 +71,84 @@ pub enum Event {
     KeyModifier{mods_depressed: u32, mods_latched: u32, mods_locked: u32, group: u32},
 }
 
+#[derive(PartialEq, Eq, Hash)]
+pub enum DataRequest {
+    KeyMap,
+}
+
+impl From<u32> for DataRequest {
+    fn from(idx: u32) -> Self {
+        match idx {
+            0 => Self::KeyMap,
+            _ => panic!("invalid enum value"),
+        }
+    }
+}
+
+impl From<DataRequest> for u32 {
+    fn from(d: DataRequest) -> Self {
+        match d {
+            DataRequest::KeyMap => 0,
+        }
+    }
+}
+
+fn handle_request(data: &Arc<RwLock<HashMap<DataRequest, Mmap>>>, mut stream: TcpStream) {
+    let mut buf = [0u8; 4];
+    stream.read_exact(&mut buf).unwrap();
+    let request = DataRequest::from(u32::from_ne_bytes(buf));
+    match request {
+        DataRequest::KeyMap => {
+            let data = data.read().unwrap();
+            let buf = data.get(&DataRequest::KeyMap).unwrap();
+            stream.write(&buf[..].len().to_ne_bytes()).unwrap();
+            stream.write(&buf[..]).unwrap();
+            stream.flush().unwrap();
+        }
+    }
+}
+
 impl Connection {
-    pub fn new(config: config::Config) -> Connection {
+    pub fn new(config: Config) -> Connection {
         let clients = ClientAddrs {
-            _left: config.client.left.resolve(),
+            left: config.client.left.resolve(),
             right: config.client.right.resolve(),
             _top: config.client.top.resolve(),
             _bottom: config.client.bottom.resolve(),
         };
-        Connection {
-            udp_socket: UdpSocket::bind(SocketAddr::new("0.0.0.0".parse().unwrap(), config.port.unwrap_or(42069)))
-                .unwrap(),
-            port: if let Some(port) = config.port { port } else { 42069 },
+        let data: Arc<RwLock<HashMap<DataRequest, Mmap>>> = Arc::new(RwLock::new(HashMap::new()));
+        let thread_data = data.clone();
+        let port = config.port.unwrap_or(42069);
+        thread::spawn(move || {
+            let sock = TcpListener::bind(SocketAddr::new("0.0.0.0".parse().unwrap(), port)).unwrap();
+            for stream in sock.incoming() {
+                if let Ok(stream) = stream {
+                    handle_request(&thread_data, stream);
+                }
+            }
+        });
+        let c = Connection {
+            udp_socket: UdpSocket::bind(SocketAddr::new("0.0.0.0".parse().unwrap(), port)).unwrap(),
+            _port: port,
             client: clients,
-        }
+            offer_data: data,
+        };
+        c
     }
 
-
-    pub fn send_data(&self, buf: &[u8]) {
-        if let Some(addr) = self.client.right {
-            let mut stream = TcpStream::connect(addr).unwrap();
-            println!("sending {} bytes!", buf.len());
-            stream.write(&buf.len().to_ne_bytes()).unwrap();
-            stream.write(buf).unwrap();
-            stream.flush().unwrap();
-        }
+    pub fn offer_data(&self, req: DataRequest, d: Mmap) {
+        self.offer_data.write().unwrap().insert(req, d);
     }
 
     pub fn receive_data(&self) -> Vec<u8> {
-        let sock = TcpListener::bind(SocketAddr::new("0.0.0.0".parse().unwrap(), self.port)).unwrap();
-        let (mut client_sock, addr) = sock.accept().unwrap();
-        println!("receiving from {}", addr);
+        let mut sock = TcpStream::connect(self.client.left.unwrap()).unwrap();
+        sock.write(&u32::from(DataRequest::KeyMap).to_ne_bytes()).unwrap();
+        sock.flush().unwrap();
         let mut buf = [0u8;8];
-        client_sock.read_exact(&mut buf[..]).unwrap();
+        sock.read_exact(&mut buf[..]).unwrap();
         let len = usize::from_ne_bytes(buf);
         let mut data: Vec<u8> = vec![0u8; len];
-        client_sock.read_exact(&mut data[..]).unwrap();
+        sock.read_exact(&mut data[..]).unwrap();
         data
     }
 

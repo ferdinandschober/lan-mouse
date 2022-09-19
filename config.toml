@@ -2,10 +2,8 @@
 host_name = "iridium"
 ip = "192.168.178.141"
 port = 42069
-location = "right"
 
 [client.right]
-host_name = "osmium"
-ip = "192.168.178.114"
-location = "left"
+# host_name = "osmium"
+ip = "192.168.2.182"
 port = 42069
