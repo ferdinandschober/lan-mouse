@@ -1,52 +1,6 @@
-use crate::config::{self, Config};
-use crate::dns;
-use memmap::Mmap;
-use std::{
-    collections::HashMap,
-    io::prelude::*,
-    net::TcpListener,
-    process::exit,
-    sync::{Arc, RwLock},
-    thread,
-};
+use std::{net::{UdpSocket, SocketAddr}, error::Error};
 
-use wayland_client::{
-    protocol::{wl_keyboard, wl_pointer},
-    WEnum,
-};
-
-use std::net::{SocketAddr, TcpStream, UdpSocket};
-
-trait Resolve {
-    fn resolve(&self) -> Option<SocketAddr>;
-}
-
-impl Resolve for Option<config::Client> {
-    fn resolve(&self) -> Option<SocketAddr> {
-        let client = match self {
-            Some(client) => client,
-            None => return None,
-        };
-        let ip = match client.ip {
-            Some(ip) => ip,
-            None => dns::resolve(&client.host_name).unwrap(),
-        };
-        Some(SocketAddr::new(ip, client.port.unwrap_or(42069)))
-    }
-}
-
-struct ClientAddrs {
-    left: Option<SocketAddr>,
-    right: Option<SocketAddr>,
-    _top: Option<SocketAddr>,
-    _bottom: Option<SocketAddr>,
-}
-
-pub struct Connection {
-    udp_socket: UdpSocket,
-    client: ClientAddrs,
-    offer_data: Arc<RwLock<HashMap<DataRequest, Mmap>>>,
-}
+use wayland_client::{protocol::{wl_pointer, wl_keyboard}, WEnum};
 
 pub trait Encode {
     fn encode(&self) -> Vec<u8>;
@@ -177,117 +131,20 @@ impl Decode for Event {
     }
 }
 
-#[derive(PartialEq, Eq, Hash)]
-pub enum DataRequest {
-    KeyMap,
+pub struct Server {
+    udp_socket: UdpSocket,
 }
 
-impl From<u32> for DataRequest {
-    fn from(idx: u32) -> Self {
-        match idx {
-            0 => Self::KeyMap,
-            _ => panic!("invalid enum value"),
-        }
-    }
-}
-
-impl From<[u8; 4]> for DataRequest {
-    fn from(buf: [u8; 4]) -> Self {
-        DataRequest::from(u32::from_ne_bytes(buf))
-    }
-}
-
-impl From<DataRequest> for u32 {
-    fn from(d: DataRequest) -> Self {
-        match d {
-            DataRequest::KeyMap => 0,
-        }
-    }
-}
-
-fn handle_request(data: &Arc<RwLock<HashMap<DataRequest, Mmap>>>, mut stream: TcpStream) {
-    let mut buf = [0u8; 4];
-    stream.read_exact(&mut buf).unwrap();
-    match DataRequest::from(buf) {
-        DataRequest::KeyMap => {
-            let data = data.read().unwrap();
-            let buf = data.get(&DataRequest::KeyMap);
-            match buf {
-                None => {
-                    stream.write(&0u32.to_ne_bytes()).unwrap();
-                }
-                Some(buf) => {
-                    stream.write(&buf[..].len().to_ne_bytes()).unwrap();
-                    stream.write(&buf[..]).unwrap();
-                }
-            }
-            stream.flush().unwrap();
-        }
-    }
-}
-
-impl Connection {
-    pub fn new(config: Config) -> Connection {
-        let clients = ClientAddrs {
-            left: config.client.left.resolve(),
-            right: config.client.right.resolve(),
-            _top: config.client.top.resolve(),
-            _bottom: config.client.bottom.resolve(),
-        };
-        let data: Arc<RwLock<HashMap<DataRequest, Mmap>>> = Arc::new(RwLock::new(HashMap::new()));
-        let thread_data = data.clone();
-        let port = config.port.unwrap_or(42069);
+impl Server {
+    pub fn new(port: u16) -> Result<Self, Box<dyn Error>> {
         let listen_addr = SocketAddr::new("0.0.0.0".parse().unwrap(), port);
-        thread::spawn(move || {
-            let sock = TcpListener::bind(listen_addr).unwrap();
-            for stream in sock.incoming() {
-                if let Ok(stream) = stream {
-                    handle_request(&thread_data, stream);
-                }
-            }
-        });
-        let sock = UdpSocket::bind(listen_addr);
-        let sock = match sock {
-            Ok(sock) => sock,
-            Err(e) => match e.kind() {
-                std::io::ErrorKind::AddrInUse => {
-                    eprintln!("Server already running on port {}", port);
-                    exit(1);
-                }
-                _ => panic!("{}", e),
-            },
-        };
-        let c = Connection {
-            udp_socket: sock,
-            client: clients,
-            offer_data: data,
-        };
-        c
+        let udp_socket = UdpSocket::bind(listen_addr)?;
+        Ok(Server { udp_socket })
     }
 
-    pub fn offer_data(&self, req: DataRequest, d: Mmap) {
-        self.offer_data.write().unwrap().insert(req, d);
-    }
-
-    pub fn receive_data(&self, req: DataRequest) -> Option<Vec<u8>> {
-        let mut sock = TcpStream::connect(self.client.left.unwrap()).unwrap();
-        sock.write(&u32::from(req).to_ne_bytes()).unwrap();
-        sock.flush().unwrap();
-        let mut buf = [0u8; 8];
-        sock.read_exact(&mut buf[..]).unwrap();
-        let len = usize::from_ne_bytes(buf);
-        if len == 0 {
-            return None;
-        }
-        let mut data: Vec<u8> = vec![0u8; len];
-        sock.read_exact(&mut data[..]).unwrap();
-        Some(data)
-    }
-
-    pub fn send_event<E: Encode>(&self, e: E) {
-        // TODO check which client
-        if let Some(addr) = self.client.right {
-            self.udp_socket.send_to(&e.encode(), addr).unwrap();
+    pub fn send_event<E: Encode>(&self, e: E, addr: SocketAddr) {
+        if let Err(e) = self.udp_socket.send_to(&e.encode(), addr) {
+            eprintln!("{}", e);
         }
     }
 
